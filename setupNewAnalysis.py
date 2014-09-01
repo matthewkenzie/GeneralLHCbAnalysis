@@ -12,7 +12,7 @@ parser = OptionParser()
 parser.add_option("-i","--inbranches",default="dat/branches_in.dat",help="Branches to read in. Default: %default")
 parser.add_option("-o","--outbranches",default="dat/branches_out.dat",help="Branches to write out. Default: %default")
 parser.add_option("-p","--packageLoc",default="../test", help="Location to put the files")
-parser.add_option("--noDatFile",default=False,action="store_true")
+parser.add_option("--firstTime",default=False,action="store_true",help="Use this the first time you run as it will create all the files you need. Be careful about running this later as it may overwrite your hard work!.")
 (options,args) = parser.parse_args()
 
 import os
@@ -58,16 +58,18 @@ def readBranchesOut():
 	f.close()
 
 def makePackage():
-	os.system('mkdir -p %s'%options.packageLoc)
-	os.system('mkdir -p %s/interface'%options.packageLoc)
-	os.system('mkdir -p %s/src'%options.packageLoc)
-	os.system('mkdir -p %s/python'%options.packageLoc)
+
+	if options.firstTime:
+		os.system('mkdir -p %s'%options.packageLoc)
+		os.system('mkdir -p %s/interface'%options.packageLoc)
+		os.system('mkdir -p %s/src'%options.packageLoc)
+		os.system('mkdir -p %s/python'%options.packageLoc)
+		os.system('mkdir -p %s/dat'%options.packageLoc)
+		os.system('cp makefile %s/'%options.packageLoc)
+
 	os.system('touch %s/python/__init__.py'%options.packageLoc)
-	os.system('mkdir -p %s/dat'%options.packageLoc)
 	os.system('cp %s %s/dat/'%(options.inbranches,options.packageLoc))
 	os.system('cp %s %s/dat/'%(options.outbranches,options.packageLoc))
-	os.system('cp makefile %s/'%options.packageLoc)
-
 
 def writeLooperHeader():
 	varKeys = variableDict.keys()
@@ -87,39 +89,43 @@ def writeLooperHeader():
 	f.write('#ifndef Looper_h\n')
 	f.write('#define Looper_h\n')
 	f.write('\n#include <iostream>\n')
+	f.write('#include <cassert>\n')
 	f.write('#include "TChain.h"\n')
 	f.write('#include "TTree.h"\n')
 	f.write('#include "TBranch.h"\n')
-	f.write('#include "TFile.h"\n\n')
+	f.write('#include "TFile.h"\n')
+	f.write('#include "TString.h"\n')
+	f.write('\n')
+
+	# struct TreeContainer
+	f.write('struct TreeContainer {\n')
+	f.write('\tTTree *tree;\n')
+	f.write('\tTString name;\n')
+	f.write('\tLong64_t nentries;\n')
+	f.write('\tint itype;\n')
+	f.write('\tint sqrts;\n')
+	f.write('};\n')
+	f.write('\n')
 
 	# class def, cstor, dstor:
-	f.write('\nclass Looper {\n')
+	f.write('class Looper {\n')
 	f.write('\n\tpublic:\n\n')
-	f.write('\t\tLooper(TTree *_inTree, TTree *_outTree, TString _name="Looper", int _itype=0, int _sqrt=8);\n')
+	f.write('\t\tLooper(TTree *_outTree, TString _name="Looper");\n')
 	f.write('\t\t~Looper();\n\n')
 
 	# class functions
 	f.write('\t\t// functions\n')
-	f.write('\t\tvoid setBranchAddresses();\n')
-	f.write('\t\tvoid setBranches();\n')
+	f.write('\t\tvoid addTreeContainer(TTree *tree, TString _name, int _itype, int _sqrts);\n')
+	f.write('\t\tvoid loadTree(int i);\n')
+	f.write('\t\tvoid setOutputBranches();\n')
 	f.write('\t\tinline void setFirstEntry(Long64_t ent) { firstEntry = ent; }\n')
 	f.write('\t\tinline void setLastEntry(Long64_t ent) { lastEntry = ent; }\n')
-	f.write('\t\tLong64_t GetEntries() { return inTree->GetEntries(); }\n')
-	f.write('\t\tInt_t GetEntry(Long64_t entry) { return inTree->GetEntry(entry); } \n')
+	f.write('\t\tLong64_t GetEntries() { return nentries; }\n')
 	f.write('\t\tInt_t Fill() { return outTree->Fill(); }\n')
-	f.write('\t\tvoid Print() { inTree->Print(); }\n')
-	f.write('\t\tvoid Show(Long64_t entry) { inTree->Show(entry); }\n')
-
-	#f.write('\t\tvoid Init();\n')
-	#f.write('\t\tvoid Term();\n')
-	#f.write('\t\tvoid Loop();\n')
-	#f.write('\t\tbool AnalyseEvent(Long64_t jentry);\n')
-	#f.write('\t\tvoid printProgressBar(Long64_t jentry);\n')
 
 	# class members
 	f.write('\n')
 	f.write('\t\t// members\n')
-	f.write('\t\tTTree *inTree;\n')
 	f.write('\t\tTTree *outTree;\n')
 	f.write('\t\tTString name;\n')
 	f.write('\t\tint itype;\n')
@@ -128,6 +134,7 @@ def writeLooperHeader():
 	f.write('\t\tLong64_t nbytes;\n')
 	f.write('\t\tLong64_t firstEntry;\n')
 	f.write('\t\tLong64_t lastEntry;\n')
+	f.write('\t\tstd::vector<TreeContainer> treeContainers;\n')
 	f.write('\n')
 
 	f.write('\n')
@@ -169,73 +176,45 @@ def writeLooperSource():
 
 	f.write('#include "../interface/Looper.h"\n')
 	f.write('\nusing namespace std;\n')
+
 	# write constructor implementation
 	f.write('\n')
-	f.write('Looper::Looper(TTree *_inTree, TTree *_outTree, TString _name, int _itype, int _sqrts):\n')
-	f.write('\tinTree(_inTree),\n')
+	f.write('Looper::Looper(TTree *_outTree, TString _name):\n')
 	f.write('\toutTree(_outTree),\n')
 	f.write('\tname(_name),\n')
-	f.write('\titype(_itype),\n')
-	f.write('\tsqrts(_sqrts),\n')
+	f.write('\tnentries(0),\n')
 	f.write('\tnbytes(0),\n')
-	f.write('\tfirstEntry(0),\n')
-	f.write('\tlastEntry(0)\n')
+	f.write('\tfirstEntry(-1),\n')
+	f.write('\tlastEntry(-1)\n')
 	f.write('{\n')
-	f.write('\tnentries = inTree->GetEntriesFast();\n')
-	f.write('\tlastEntry = nentries;\n')
-	f.write('\tsetBranchAddresses();\n')
-	f.write('\tsetBranches();\n')
+	f.write('\tsetOutputBranches();\n')
 	f.write('}\n\n')
 	f.write('Looper::~Looper(){}\n\n')
 
-	# some standard functions
-	#f.write('\nvoid Looper::Init(){}\n\n')
-	#f.write('\nvoid Looper::Term(){}\n\n')
+	# addTreeContainer()
+	f.write('void Looper::addTreeContainer(TTree *tree, TString _name, int _itype, int _sqrts) {\n\n')
+	f.write('\tTreeContainer treeContainer;\n')
+	f.write('\ttreeContainer.tree = tree;\n')
+	f.write('\ttreeContainer.name = _name;\n')
+	f.write('\ttreeContainer.nentries = tree->GetEntries();\n')
+	f.write('\ttreeContainer.itype = _itype;\n')
+	f.write('\ttreeContainer.sqrts = _sqrts;\n')
+	f.write('\n')
+	f.write('\ttreeContainers.push_back(treeContainer);\n')
+	f.write('\tnentries += treeContainer.nentries;\n')
+	f.write('}\n\n')
 
-	# Loop() function
-	#f.write('\nvoid Looper::Loop()\n{\n\n')
-	#f.write('\ttimer.Start();\n')
-	#f.write('\tfor (Long64_t jentry=firstEntry; jentry<lastEntry; jentry++) {\n')
-	#f.write('\t\tif ( AnalyseEvent(jentry) ) outTree->Fill();\n')
-	#f.write('\t}\n')
-	#f.write('\ttimer.Stop();\n')
-	#f.write('\tcout << "Took: "; timer.Print();\n')
-	#f.write('}\n\n')
-
-	# progress bar
-	#f.write('void Looper::printProgressBar(Long64_t jentry) {\n')
-	#f.write('\tdouble percentage = 100.*double(jentry-firstEntry)/double(lastEntry-firstEntry);\n')
-	#f.write('\tTString prog = "[";\n')
-	#f.write('\tfor (int i=0; i<=100; i+=2) {\n')
-	#f.write('\t\tif (percentage>(double(i)-0.001)) prog += "-";\n')
-	#f.write('\t\telse prog += " ";\n')
-	#f.write('\t}\n')
-	#f.write('\tprog += "]";\n\n')
-	#f.write('\tdouble time = timer.RealTime();\n')
-	#f.write('\ttimer.Continue();\n')
-	#f.write('\tdouble timeperevent = time/double(jentry-firstEntry);\n')
-	#f.write('\tdouble esttimeleft = timeperevent*double(lastEntry-jentry);\n\n')
-	#f.write('\tTString summary = Form("%6.2f%% -- %4.4f ms/ev -- %10.0f secs left",percentage,timeperevent*1000.,esttimeleft);\n')
-	#f.write('\tcout << "\t" << prog << " " << summary << "\\r" << flush;\n')
-	#f.write('}\n\n')
-
-	# AnalyseEvent() function
-	#f.write('bool Looper::AnalyseEvent(Long64_t jentry) {\n')
-	#f.write('\tLong64_t nb = inTree->GetEntry(jentry);\n')
-	#f.write('\tnbytes += nb;\n')
-	#f.write('\n')
-	#f.write('\tif (jentry%10000==0) {\n')
-	#f.write('\t\tprintProgressBar(jentry);\n')
-	#f.write('\t}\n')
-	#f.write('\treturn true;\n')
-	#f.write('}\n\n')
-
-	# Branch address etc.
-	f.write('void Looper::setBranchAddresses()\n')
-	f.write('{\n')
+	# loadTree()
+	f.write('void Looper::loadTree(int i) {\n')
+	f.write('\tassert(i>=0 && i<treeContainers.size());\n')
+	f.write('\n')
+	f.write('TTree *tree = treeContainers[i].tree;\n')
+	f.write('itype = treeContainers[i].itype;\n')
+	f.write('sqrts = treeContainers[i].sqrts;\n')
+	f.write('\n')
 	for key in varKeys:
 		if variableDict[key][2]>0: continue # write only
-		line = 'inTree->SetBranchAddress("%s", &%s, &b_%s);\n'%(key,key,key)
+		line = 'tree->SetBranchAddress("%s", &%s, &b_%s);\n'%(key,key,key)
 		if variableDict[key][1]<0: # this is MC only
 			line = "if (itype<0) "+line
 		if variableDict[key][1]>0: # this is data only
@@ -243,7 +222,8 @@ def writeLooperSource():
 		f.write("\t"+line)
 	f.write('}\n\n')
 
-	f.write('void Looper::setBranches()\n')
+	# setOutputBranches()
+	f.write('void Looper::setOutputBranches()\n')
 	f.write('{\n')
 	for key in varKeys:
 		if variableDict[key][2]<0: continue # read only
@@ -285,17 +265,17 @@ def writeRunnerHeader():
 	f.write('\tpublic:\n\n')
 	f.write('\t\tRunner(TTree *_outTree, TString _name="Runner");\n')
 	f.write('\t\t~Runner();\n\n')
-	f.write('\t\tvoid addLooper(TTree *tree, TString name, int itype, int sqrts);\n')
+	f.write('\t\tvoid addLooperTree(TTree *tree, TString name, int itype, int sqrts);\n')
 	f.write('\t\tvoid addAnalyser(BaseAnalyser *analyser);\n')
 	f.write('\t\tvoid setEntryRange(Long64_t first, Long64_t last) { firstEntry = first; lastEntry = last; } \n')
 	f.write('\t\tvoid setFirstEntry(Long64_t ent) { firstEntry = ent; }\n')
 	f.write('\t\tvoid setLastEntry(Long64_t ent) { lastEntry = ent; }\n')
-	f.write('\t\tvoid printProgressBar(Long64_t jentry);\n')
+	f.write('\t\tvoid printProgressBar(Long64_t jentry, bool isDone=false);\n')
 	f.write('\t\tvoid run();\n')
 	f.write('\n\tprivate:\n\n')
 	f.write('\t\tTTree *outTree;\n')
 	f.write('\t\tTString name;\n')
-	f.write('\t\tstd::vector<Looper*> loopers;\n')
+	f.write('\t\tLooper* looper;\n')
 	f.write('\t\tstd::vector<BaseAnalyser*> analysers;\n')
 	f.write('\t\tLong64_t nentries;\n')
 	f.write('\t\tLong64_t firstEntry;\n')
@@ -329,17 +309,19 @@ def writeRunnerSource():
 	f.write('\tfirstEntry(-1),\n')
 	f.write('\tlastEntry(-1),\n')
 	f.write('\tnaccepted(0)\n')
-	f.write('{}\n\n')
+	f.write('{\n')
+	f.write('\tlooper = new Looper(outTree,_name);\n')
+	f.write('}\n\n')
 	#destructor
 	f.write('Runner::~Runner(){}\n\n')
 	# functions
 
-	# addLooper()
-	f.write('void Runner::addLooper(TTree *tree, TString name, int itype, int sqrts) {\n')
-	f.write('\tloopers.push_back(new Looper(tree, outTree, name, itype, sqrts));\n')
-	f.write('\tLong64_t ents = loopers[loopers.size()-1]->GetEntries();\n')
+	# addLooperTree()
+	f.write('void Runner::addLooperTree(TTree *tree, TString name, int itype, int sqrts) {\n')
+	f.write('\tlooper->addTreeContainer(tree,name,itype,sqrts);\n')
+	f.write('\tLong64_t ents = tree->GetEntries();\n')
 	f.write('\tnentries += ents;\n')
-	f.write('\tcout << Form("%-30s","Runner::addLooper()") << " " << "Added Looper (" << name.Data() << ") with " << ents << " entries." << endl;\n')
+	f.write('\tcout << Form("%-30s","Runner::addLooperTree()") << " " << "Added LooperTree (" << name.Data() << ") with " << ents << " entries." << endl;\n')
 	f.write('}\n\n')
 
 	# addAnalyser()
@@ -349,7 +331,7 @@ def writeRunnerSource():
 	f.write('}\n\n')
 
 	# progress bar
-	f.write('void Runner::printProgressBar(Long64_t jentry) {\n')
+	f.write('void Runner::printProgressBar(Long64_t jentry, bool isDone) {\n')
 	f.write('\tdouble percentage = 100.*double(jentry-firstEntry)/double(lastEntry-firstEntry);\n')
 	f.write('\tTString prog = "[";\n')
 	f.write('\tfor (int i=0; i<=100; i+=2) {\n')
@@ -361,29 +343,40 @@ def writeRunnerSource():
 	f.write('\ttimer.Continue();\n')
 	f.write('\tdouble timeperevent = time/double(jentry-firstEntry);\n')
 	f.write('\tdouble esttimeleft = timeperevent*double(lastEntry-jentry);\n\n')
-	f.write('\tTString summary = Form("%5.1f%% -- %4.2f ms/ev -- %10.0f secs left",percentage,timeperevent*1000.,esttimeleft);\n')
+	f.write('\tif (isDone) percentage = 100.;\n')
+	f.write('\tTString summary = Form("%5.1f%% -- %6d/%-6d -- %6.2f ms/ev -- %10.0f secs left",percentage,int(jentry-firstEntry),int(lastEntry-firstEntry),timeperevent*1000.,esttimeleft);\n')
 	f.write('\tcout << Form("%-30s","Runner::run()") << " " << prog << " " << summary << "\\r" << flush;\n')
 	f.write('}\n\n')
 
 	# run()
 	f.write('void Runner::run(){\n\n')
 	f.write('\ttimer.Start();\n\n')
-	f.write('\tfor (unsigned int l=0; l<loopers.size(); l++){\n\n')
-	f.write('\t\tcout << Form("%-30s","Runner::run()") << " " << "Processing Looper (" << loopers[l]->name.Data() << ")." << endl;\n')
-	f.write('\t\tLong64_t jentries = loopers[l]->GetEntries();\n')
+	f.write('\tcout << Form("%-30s","Runner::run()") << " " << "Processing Looper (" << looper->name.Data() << ")." << endl;\n')
+	f.write('\n')
+	f.write('\tfor (unsigned int t=0; t<looper->treeContainers.size(); t++) {\n\n')
+
+	f.write('\t\tLong64_t jentries = looper->treeContainers[t].nentries;\n')
+	f.write('\t\tcout << Form("%-30s","Runner::run()") << " " << "Loading tree (" << looper->treeContainers[t].name << ") with entries " << jentries << endl;\n')
+	f.write('\t\tlooper->loadTree(t);\n\n')
+	f.write('\t\tint cachedFirstEntry = firstEntry;\n')
+	f.write('\t\tint cachedLastEntry = lastEntry;\n\n')
 	f.write('\t\tif (firstEntry<0) firstEntry=0;\n')
-	f.write('\t\tif (lastEntry<0) lastEntry=jentries;\n')
+	f.write('\t\tif (lastEntry<0) lastEntry=jentries;\n\n')
 	f.write('\t\tfor (Long64_t jentry=0; jentry<jentries; jentry++){\n\n')
 	f.write('\t\t\tif (jentry%int(TMath::Ceil(jentries/1000))==0) printProgressBar(jentry);\n')
-	f.write('\t\t\tloopers[l]->GetEntry(jentry);\n')
+	f.write('\t\t\tlooper->treeContainers[t].tree->GetEntry(jentry);\n')
 	f.write('\t\t\tfor (unsigned a=0; a<analysers.size(); a++){\n')
-	f.write('\t\t\t\tif ( ! analysers[a]->AnalyseEvent(*loopers[l]) ) continue; // can skip on if the event fails one analysis in the chain\n')
+	f.write('\t\t\t\tif ( ! analysers[a]->AnalyseEvent(*looper) ) continue; // can skip on if the event fails one analysis in the chain\n')
 	f.write('\t\t\t\tnaccepted ++;\n')
+	f.write('\t\t\t\tlooper->Fill();\n')
 	f.write('\t\t\t}\n')
 	f.write('\t\t}\n')
+	f.write('\t\tprintProgressBar(jentries,true);\n')
 	f.write('\t\tcout << endl;\n')
-	f.write('\t\tcout << Form("%-30s","Runner::run()") << " " << "Processing complete. Accepted " << naccepted << " events." << endl;\n')
+	f.write('\t\tfirstEntry = cachedFirstEntry;\n')
+	f.write('\t\tlastEntry = cachedLastEntry;\n')
 	f.write('\t}\n')
+	f.write('\t\tcout << Form("%-30s","Runner::run()") << " " << "Processing complete. Accepted " << naccepted << " / " << nentries << " events -- " << Form("%6.2f%%",100.*double(naccepted)/double(nentries)) << " efficient" << endl;\n')
 	f.write('}\n\n')
 
 def writeAnalyserHeader():
@@ -608,7 +601,7 @@ def writeConfigfile():
 	f.write('\t\t\t\tif name != f.name:\n')
 	f.write('\t\t\t\t\tsys.exit(\'ERROR -- If the itype is the same for two lines in the datfile, the name must be the same also\')\n')
 	f.write('\n')
-	f.write('\t\t\tself.runner.addLooper(tree,name,itype,self.getSqrts(itype))\n')
+	f.write('\t\t\tself.runner.addLooperTree(tree,name,itype,self.getSqrts(itype))\n')
 	f.write('\n')
 	f.write('\t\tfor analyser in self.analysers:\n')
 	f.write('\t\t\tself.runner.addAnalyser(analyser)\n')
@@ -658,17 +651,22 @@ readBranchesOut()
 
 # headers
 writeLooperHeader()
-writeRunnerHeader()
-writeAnalyserHeader()
-writeExampleAnalyserHeader()
+
+if options.firstTime:
+	writeRunnerHeader()
+	writeAnalyserHeader()
+	writeExampleAnalyserHeader()
 
 # sources
 writeLooperSource()
-writeRunnerSource()
-writeAnalyserSource()
-writeExampleAnalyserSource()
+
+if options.firstTime:
+	writeRunnerSource()
+	writeAnalyserSource()
+	writeExampleAnalyserSource()
 
 # config
-writeConfigfile()
-writeRunScript()
-if not options.noDatFile: writeDatfile()
+if options.firstTime:
+	writeConfigfile()
+	writeRunScript()
+	writeDatfile()
